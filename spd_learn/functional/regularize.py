@@ -79,7 +79,7 @@ def ledoit_wolf(
     alpha = torch.sigmoid(shrinkage)
 
     return (1 - alpha)[..., None, None] * covariances + alpha[..., None, None] * (
-        mu[..., None] * shrink_mat
+        mu[..., None] * shrink_mat.to(device=covariances.device, dtype=covariances.dtype)
     )
 
 

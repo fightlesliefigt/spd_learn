@@ -203,4 +203,4 @@ class WaveletConv(nn.Module):
             n_batch, n_freqs, n_sensors, n_epochs, n_times = X_conv.shape
             X_conv = X_conv.view(n_batch, n_freqs, n_sensors, n_epochs * n_times)
 
-        return X_conv.to(device=self.device, dtype=self.dtype)
+        return X_conv.to(device=X.device, dtype=self.dtype)
