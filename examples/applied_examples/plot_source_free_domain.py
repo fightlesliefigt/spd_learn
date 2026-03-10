@@ -82,28 +82,6 @@ import warnings
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn.functional as F
-from braindecode import EEGClassifier
-from braindecode.datasets import create_from_X_y
-from moabb.datasets import BNCI2015_001
-from moabb.paradigms import MotorImagery
-from sklearn.metrics import balanced_accuracy_score
-from sklearn.preprocessing import LabelEncoder
-from skorch.callbacks import GradientNormClipping
-from skorch.dataset import ValidSplit
-from torch.nn.utils.parametrize import register_parametrization
-
-from spd_learn.functional import (
-    get_epsilon,
-    matrix_exp,
-    matrix_inv_sqrt,
-    matrix_log,
-    matrix_power,
-    matrix_sqrt_inv,
-)
-from spd_learn.models import TSMNet
-from spd_learn.modules import LogEig
-from spd_learn.modules.manifold import SymmetricPositiveDefinite
 
 warnings.filterwarnings("ignore")
 
@@ -114,6 +92,14 @@ warnings.filterwarnings("ignore")
 # We define two core geometric operations needed for the SPDIM pipeline.
 # These will be included in a future release of ``spd_learn.functional``.
 #
+
+from spd_learn.functional import (
+    get_epsilon,
+    matrix_exp,
+    matrix_log,
+    matrix_power,
+    matrix_sqrt_inv,
+)
 
 
 def geodesic_transport_to_identity(X, mean, t):
@@ -203,6 +189,11 @@ def karcher_mean(X, max_iter=50, return_distances=False):
 # - **Source domain**: Session A (training with labels)
 # - **Target domain**: Session B (adaptation without labels)
 #
+
+from braindecode.datasets import create_from_X_y
+from moabb.datasets import BNCI2015_001
+from moabb.paradigms import MotorImagery
+from sklearn.preprocessing import LabelEncoder
 
 dataset = BNCI2015_001()
 paradigm = MotorImagery(
@@ -320,6 +311,12 @@ for c in np.unique(y_target_shifted):
 # - **Validation split** (10%) for early stopping
 #
 
+from braindecode import EEGClassifier
+from skorch.callbacks import GradientNormClipping
+from skorch.dataset import ValidSplit
+
+from spd_learn.models import TSMNet
+
 n_chans = X_source.shape[1]
 n_outputs = len(le.classes_)
 
@@ -366,6 +363,8 @@ clf.fit(X_source, y_source)
 # Evaluate the source-trained model on target domain without adaptation.
 #
 
+from sklearn.metrics import balanced_accuracy_score
+
 underlying_model = clf.module_
 
 y_pred_source = clf.predict(X_source)
@@ -390,6 +389,8 @@ print(f"Performance Drop: {(source_bacc - no_adapt_bacc) * 100:.2f}%")
 # geodesic transport, while keeping the variance normalization and
 # rebiasing from the trained BN layer.
 #
+
+from spd_learn.modules import LogEig
 
 
 def extract_spd_features(model, X_data, batch_size=32):
@@ -491,6 +492,8 @@ underlying_model.spdbnorm.running_var.copy_(orig_running_var)
 # while maintaining class diversity (high marginal entropy).
 #
 
+import torch.nn.functional as F
+
 
 def im_loss(logits, temperature=2.0):
     """Information Maximization loss (matching SPDIM paper)."""
@@ -520,6 +523,11 @@ def im_loss(logits, temperature=2.0):
 # Learnable SPD Recenter Module
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #
+
+from torch.nn.utils.parametrize import register_parametrization
+
+from spd_learn.functional import matrix_inv_sqrt
+from spd_learn.modules.manifold import SymmetricPositiveDefinite
 
 
 class SPDLearnableRecenter(torch.nn.Module):
