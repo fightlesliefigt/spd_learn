@@ -83,6 +83,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+
 warnings.filterwarnings("ignore")
 
 ######################################################################
@@ -132,9 +133,7 @@ def karcher_mean(X, max_iter=50, return_distances=False):
     if n_samples == 1:
         mean = X[:1]
         if return_distances:
-            return mean, torch.zeros(
-                X.shape[:-2], dtype=X.dtype, device=X.device
-            )
+            return mean, torch.zeros(X.shape[:-2], dtype=X.dtype, device=X.device)
         return mean
 
     w = torch.ones((*X.shape[:-2], 1, 1), dtype=X.dtype, device=X.device)
@@ -195,6 +194,7 @@ from moabb.datasets import BNCI2015_001
 from moabb.paradigms import MotorImagery
 from sklearn.preprocessing import LabelEncoder
 
+
 dataset = BNCI2015_001()
 paradigm = MotorImagery(
     n_classes=2,
@@ -241,7 +241,10 @@ X_target, y_target = X[target_idx], y[target_idx]
 
 # Create braindecode dataset for target domain
 target_ds = create_from_X_y(
-    X_target, y_target, drop_last_window=True, sfreq=sfreq,
+    X_target,
+    y_target,
+    drop_last_window=True,
+    sfreq=sfreq,
 )
 
 print(f"Dataset: {dataset.code}")
@@ -272,20 +275,23 @@ ratio_level = 0.2
 # SPDIM protocol: subsample all classes except the last to ratio_level
 rng = np.random.RandomState(42)
 classes = sorted(np.unique(y_target))
-subsample_inds = np.sort(np.concatenate([
-    rng.choice(
-        np.flatnonzero(y_target == c),
-        size=math.ceil(np.sum(y_target == c) * (
-            ratio_level if i < len(classes) - 1 else 1.0
-        )),
-        replace=False,
+subsample_inds = np.sort(
+    np.concatenate(
+        [
+            rng.choice(
+                np.flatnonzero(y_target == c),
+                size=math.ceil(
+                    np.sum(y_target == c)
+                    * (ratio_level if i < len(classes) - 1 else 1.0)
+                ),
+                replace=False,
+            )
+            for i, c in enumerate(classes)
+        ]
     )
-    for i, c in enumerate(classes)
-]))
+)
 
-target_shifted_ds = target_ds.split(
-    by={"shifted": subsample_inds.tolist()}
-)["shifted"]
+target_shifted_ds = target_ds.split(by={"shifted": subsample_inds.tolist()})["shifted"]
 
 # Keep arrays for SPDIM adaptation methods
 X_target_shifted = X_target[subsample_inds]
@@ -295,10 +301,7 @@ print(f"\nAfter label shift (ratio_level={ratio_level}):")
 print(f"  Target samples: {len(target_shifted_ds)}")
 for c in np.unique(y_target_shifted):
     n = (y_target_shifted == c).sum()
-    print(
-        f"  Class {le.classes_[c]}: {n} "
-        f"({100 * n / len(y_target_shifted):.0f}%)"
-    )
+    print(f"  Class {le.classes_[c]}: {n} ({100 * n / len(y_target_shifted):.0f}%)")
 
 ######################################################################
 # Training TSMNet on Source Domain
@@ -316,6 +319,7 @@ from skorch.callbacks import GradientNormClipping
 from skorch.dataset import ValidSplit
 
 from spd_learn.models import TSMNet
+
 
 n_chans = X_source.shape[1]
 n_outputs = len(le.classes_)
@@ -343,7 +347,7 @@ clf = EEGClassifier(
     optimizer__weight_decay=1e-4,
     train_split=ValidSplit(0.1, stratified=True, random_state=42),
     batch_size=32,
-    max_epochs=200,
+    max_epochs=30,  # Reduced from 200 for faster documentation build
     callbacks=[
         ("gradient_clip", GradientNormClipping(gradient_clip_value=5.0)),
     ],
@@ -364,6 +368,7 @@ clf.fit(X_source, y_source)
 #
 
 from sklearn.metrics import balanced_accuracy_score
+
 
 underlying_model = clf.module_
 
@@ -571,9 +576,7 @@ print(f"{'=' * 50}")
 with torch.no_grad():
     S_init = matrix_log.apply(target_karcher_mean.squeeze(0).unsqueeze(0))
 
-X_spd_target = extract_spd_features(
-    underlying_model, X_target_shifted, batch_size=32
-)
+X_spd_target = extract_spd_features(underlying_model, X_target_shifted, batch_size=32)
 
 print(f"Log-space parameter S initialized. Shape: {target_karcher_mean.shape}")
 
@@ -581,14 +584,16 @@ adapter = SPDLearnableRecenter(target_karcher_mean.shape[-1])
 adapter.bias = target_karcher_mean.clone()
 
 optimizer_bias = torch.optim.Adam(adapter.parameters(), lr=0.05)
-n_epochs_bias = 200
+n_epochs_bias = 30  # Reduced from 200 for faster documentation build
 losses_bias = []
 best_loss_bias = float("inf")
 best_S = target_karcher_mean.clone().detach()
 for epoch in range(n_epochs_bias):
     optimizer_bias.zero_grad()
     logits = spdim_forward(
-        underlying_model, X_spd_target, adapter,
+        underlying_model,
+        X_spd_target,
+        adapter,
     )
     loss = im_loss(logits, temperature=2.0)
     loss.backward()
@@ -607,7 +612,9 @@ for epoch in range(n_epochs_bias):
 with torch.no_grad():
     adapter.bias = best_S
     logits = spdim_forward(
-        underlying_model, X_spd_target, adapter,
+        underlying_model,
+        X_spd_target,
+        adapter,
     )
     y_pred_bias = logits.argmax(dim=1).cpu().numpy()
 
