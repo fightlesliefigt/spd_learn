@@ -38,7 +38,7 @@ the geometric operations in ``spd_learn.functional``.
 #
 #     \tilde{C}_i = \bar{C}_j^{-1/2} \, C_i \, \bar{C}_j^{-1/2}
 #
-# where :math:`\bar{C}_j` is the Frechet mean of the target domain.
+# where :math:`\bar{C}_j` is the Fréchet mean of the target domain.
 # However, the paper's **Proposition 2** shows that RCT only compensates
 # conditional shift when the label priors are identical across domains.
 # Under label shift, :math:`\bar{C}_j` is biased toward the
@@ -57,8 +57,9 @@ the geometric operations in ``spd_learn.functional``.
 #     \tilde{C}_i = \Phi_j^{1/2} \, \bar{C}_j^{-1/2}
 #     \, C_i \, \bar{C}_j^{-1/2} \, \Phi_j^{1/2}
 #
-# It uses ``karcher_mean`` for initialization and
-# a log-space parameterization for optimization with standard Adam.
+# It initializes :math:`\Phi_j` with the target Fréchet mean and
+# optimizes it as an SPD-constrained parameter via
+# ``torch.nn.utils.parametrize`` and ``SymmetricPositiveDefinite``.
 #
 # SPDIM optimizes the **IM loss** (Eq. 21):
 #
@@ -67,7 +68,10 @@ the geometric operations in ``spd_learn.functional``.
 #     \mathcal{L}_{\mathrm{IM}} = \underbrace{H(Y | X)}_{\text{conditional
 #     entropy}} - \underbrace{H(\bar{Y})}_{\text{marginal entropy}}
 #
-# This encourages confident predictions (low :math:`H(Y|X)`) while
+# Here, :math:`H(Y \mid X)` is the conditional entropy of the model
+# predictions for each target sample, and :math:`H(\bar{Y})` is the
+# entropy of the average predictive distribution across the target set.
+# This encourages confident predictions (low :math:`H(Y \mid X)`) while
 # maintaining class diversity (high :math:`H(\bar{Y})`).
 #
 
@@ -98,27 +102,12 @@ from spd_learn.functional import (
     get_epsilon,
     matrix_exp,
     matrix_log,
-    matrix_power,
     matrix_sqrt_inv,
 )
 
 
-def geodesic_transport_to_identity(X, mean, t):
-    r"""Transport SPD matrices along the geodesic toward identity.
-
-    .. math::
-
-        T_t(X) = A^{-t/2} \, X \, A^{-t/2}
-
-    When ``t = 0``: no transport. When ``t = 1``: full centering (RCT).
-    """
-    t_tensor = torch.as_tensor(t, dtype=X.dtype, device=X.device)
-    mean_pow = matrix_power.apply(mean, t_tensor * (-0.5))
-    return mean_pow @ X @ mean_pow
-
-
-def karcher_mean(X, max_iter=50, return_distances=False):
-    r"""Compute the Frechet (Karcher) mean under the AIRM.
+def frechet_mean(X, max_iter=50, return_distances=False):
+    r"""Compute the Fréchet mean under the AIRM.
 
     .. math::
 
@@ -263,7 +252,7 @@ print(f"Classes: {le.classes_}")
 # Following the paper's ``get_label_ratio`` protocol with
 # ``ratio_level=0.2``: we keep all samples of the last class and
 # subsample the other class(es) to 20%. This creates a 5:1 class
-# imbalance, making the Frechet mean biased toward the majority class.
+# imbalance, making the Fréchet mean biased toward the majority class.
 #
 # As shown by the paper's **Proposition 2**, this biased mean causes
 # RCT to misalign: the recentered features no longer align with
@@ -448,12 +437,12 @@ def spdim_forward(model, X_spd, adapter=None):
 # -------------------------------------------------
 #
 # The **Recentering Transform (RCT)** :cite:p:`zanini2017transfer`
-# baseline recomputes the Frechet mean and variance on target SPD
+# baseline recomputes the Fréchet mean and variance on target SPD
 # features using the full Karcher flow. This corresponds to setting
 # :math:`\varphi = 1` (standard centering) in the geodesic transport.
 #
 # Under label shift, Proposition 2 predicts that this will degrade
-# performance because the biased Frechet mean shifts features away
+# performance because the biased Fréchet mean shifts features away
 # from the source decision boundary.
 #
 
@@ -462,10 +451,10 @@ orig_running_mean = underlying_model.spdbnorm.running_mean.clone()
 orig_running_var = underlying_model.spdbnorm.running_var.clone()
 
 
-def refit_spdbn_karcher(model, X_data, batch_size=32):
-    """Refit SPDBatchNormMeanVar using full Karcher mean (SPDIM style)."""
+def refit_spdbn_frechet(model, X_data, batch_size=32):
+    """Refit SPDBatchNormMeanVar using the Fréchet mean (SPDIM style)."""
     X_spd = extract_spd_features(model, X_data, batch_size=batch_size)
-    mean, distances = karcher_mean(X_spd, max_iter=50, return_distances=True)
+    mean, distances = frechet_mean(X_spd, max_iter=50, return_distances=True)
     variance = distances.square().mean(dim=0, keepdim=True).squeeze()
     with torch.no_grad():
         model.spdbnorm.running_mean.copy_(mean)
@@ -476,9 +465,9 @@ print(f"\n{'=' * 50}")
 print("SFUDA Step 1: Refit BN Statistics (RCT)")
 print(f"{'=' * 50}")
 
-refit_spdbn_karcher(underlying_model, X_target_shifted)
+refit_spdbn_frechet(underlying_model, X_target_shifted)
 
-target_karcher_mean = underlying_model.spdbnorm.running_mean.clone()
+target_frechet_mean = underlying_model.spdbnorm.running_mean.clone()
 
 rct_pred = clf.predict(target_shifted_ds)
 rct_bacc = balanced_accuracy_score(y_target_shifted, rct_pred)
@@ -514,16 +503,12 @@ def im_loss(logits, temperature=2.0):
 # --------------------
 #
 # SPDIM(bias) (Eq. 19) learns a full SPD reference mean that replaces
-# the (biased) Frechet mean in the geodesic transport. With
+# the (biased) Fréchet mean in the geodesic transport. With
 # :math:`D(D+1)/2` degrees of freedom (vs 1 scalar for geodesic), it
 # can compensate both conditional and label shift.
 #
-# We parameterize the learnable mean in log space:
-# :math:`M = \exp(S)` where :math:`S` is an unconstrained symmetric
-# matrix. This guarantees :math:`M \in \mathcal{S}_{++}^D` and allows
-# standard Adam optimization via
-# :func:`~spd_learn.functional.matrix_exp` /
-# :func:`~spd_learn.functional.matrix_log`.
+# We initialize the learnable mean with the target Fréchet mean and
+# keep it on the SPD manifold via ``SymmetricPositiveDefinite``.
 #
 # Learnable SPD Recenter Module
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -569,25 +554,21 @@ class SPDLearnableRecenter(torch.nn.Module):
 #
 
 print(f"\n{'=' * 50}")
-print("SPDIM(bias): Learnable SPD Mean (Log-Space Parameterization)")
+print("SPDIM(bias): Learnable SPD Mean")
 print(f"{'=' * 50}")
-
-# Parameterize in log space: M = exp(S), initialized from Karcher mean
-with torch.no_grad():
-    S_init = matrix_log.apply(target_karcher_mean.squeeze(0).unsqueeze(0))
 
 X_spd_target = extract_spd_features(underlying_model, X_target_shifted, batch_size=32)
 
-print(f"Log-space parameter S initialized. Shape: {target_karcher_mean.shape}")
+print(f"SPD reference initialized. Shape: {target_frechet_mean.shape}")
 
-adapter = SPDLearnableRecenter(target_karcher_mean.shape[-1])
-adapter.bias = target_karcher_mean.clone()
+adapter = SPDLearnableRecenter(target_frechet_mean.shape[-1])
+adapter.bias = target_frechet_mean.clone()
 
 optimizer_bias = torch.optim.Adam(adapter.parameters(), lr=0.05)
 n_epochs_bias = 30  # Reduced from 200 for faster documentation build
 losses_bias = []
 best_loss_bias = float("inf")
-best_S = target_karcher_mean.clone().detach()
+best_bias = target_frechet_mean.clone().detach()
 for epoch in range(n_epochs_bias):
     optimizer_bias.zero_grad()
     logits = spdim_forward(
@@ -603,14 +584,14 @@ for epoch in range(n_epochs_bias):
     losses_bias.append(current_loss)
     if current_loss < best_loss_bias:
         best_loss_bias = current_loss
-        best_S = adapter.bias.clone().detach()
+        best_bias = adapter.bias.clone().detach()
 
     if (epoch + 1) % 10 == 0 or epoch == 0:
         print(f"  Epoch {epoch + 1:3d}/{n_epochs_bias}: loss={current_loss:.4f}")
 
 # Evaluate with best parameters
 with torch.no_grad():
-    adapter.bias = best_S
+    adapter.bias = best_bias
     logits = spdim_forward(
         underlying_model,
         X_spd_target,
@@ -735,8 +716,8 @@ plt.show()
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #
 # The Recentering Transform (RCT) :cite:p:`zanini2017transfer` computes
-# the Frechet mean of the target domain and uses it to center the SPD
-# features. Under **label shift**, the Frechet mean is biased toward
+# the Fréchet mean of the target domain and uses it to center the SPD
+# features. Under **label shift**, the Fréchet mean is biased toward
 # the over-represented class (here, *feet* at 83% of samples).
 #
 # As predicted by **Proposition 2** of the paper, this biased mean
@@ -754,8 +735,6 @@ plt.show()
 # - **Best-model tracking**: Returns the parameter with lowest IM loss.
 # - **Test-time BN**: Only geodesic transport (no dispersion
 #   normalization), matching the original SPDIM test-time pipeline.
-# - **Float64 for adaptation**: SPD features are cast to float64 for
-#   numerical stability in eigendecompositions and matrix logarithms.
 #
 # References
 # ----------
