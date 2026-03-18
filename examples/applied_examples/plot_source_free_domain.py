@@ -69,10 +69,12 @@ the geometric operations in ``spd_learn.functional``.
 #     entropy}} - \underbrace{H(\bar{Y})}_{\text{marginal entropy}}
 #
 # Here, :math:`H(Y \mid X)` is the conditional entropy of the model
-# predictions for each target sample, and :math:`H(\bar{Y})` is the
-# entropy of the average predictive distribution across the target set.
-# This encourages confident predictions (low :math:`H(Y \mid X)`) while
-# maintaining class diversity (high :math:`H(\bar{Y})`).
+# predictions for each target sample. :math:`H(Y)` is the marginal
+# entropy of the predicted labels, estimated here by
+# :math:`H(\bar{Y})`, the entropy of the average predictive
+# distribution across the target set. This encourages confident
+# predictions (low :math:`H(Y \mid X)`) while maintaining class
+# diversity (high :math:`H(Y)`).
 #
 
 ######################################################################
